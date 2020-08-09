@@ -1,0 +1,117 @@
+---
+
+- debug: 
+    var: mysql
+    verbosity: 1
+
+- name: '({{mysql_name}}) setting variables'
+  set_fact: "{{item.key}}={{item.value}}"
+  # delegate_to: 127.0.0.1
+  with_dict: "{{ mysql|default({}) }}"
+  loop_control:
+    label: "{{item.key}} -> {{ item.key | regex_search('pass') | ternary('*******', item.value) }}"
+  # no_log: True
+  tags: [ mysql-server, configs, db-install, mysql-grants, scripts ]
+
+# - name: meta
+#   meta: end_play
+#   when: true
+
+- name: '({{ mysql_name }}) setting mysql_config, mysql_server_id'
+  set_fact: 
+    mysql_config={{ mysql_config_path }}/{{ mysql_name }}.cnf
+    mysql_server_id={{ ( inventory_hostname ~ (mysql_port | default(3306) | string ) ~ mysql_name ) | int_hash(1, 65535) }}
+  delegate_to: 127.0.0.1
+  tags: [ mysql-server, configs, db-install, mysql-grants, scripts ]
+
+- name: '({{ mysql_name }}) check if database already exists'
+  stat: path=/var/lib/mysql-{{ mysql_name }}
+  register: db_dir
+  tags: [ mysql-server, configs, db-install ]
+
+- name: '({{ mysql_name }}) setting mysql_db_exist flag'
+  set_fact: mysql_db_exist={{ db_dir.stat.exists }}
+  tags: [ mysql-server, configs, db-install ]
+
+- name: '({{ mysql_name }}) installing config'
+  template: src=etc/mysql-multi/mysql.cnf dest={{ mysql_config }} owner=mysql group=mysql mode=0440 backup=no
+  register: config
+  tags: [ mysql-server, configs, db-install ]
+
+- name: '({{ mysql_name }}) installing logrotate'
+  template: src=etc/logrotate.d/mysql-slow-log dest=/etc/logrotate.d/mysql-slow-log mode=0644 backup=no
+  tags: [ mysql-server, configs, db-install ]
+
+- name: '({{ mysql_name }}) creating directory structure'
+  file: path=/var/lib/mysql-{{ mysql_name }}/{{ item }} state=directory owner=mysql group=mysql force=yes mode=0700
+  with_items: ['bin', 'binlog', 'data', 'innodb', 'relaylog', 'sql', 'tmp']
+  tags: [ mysql-server, db-install ]
+
+- name: '({{ mysql_name }}) installing tool scripts'
+  template: src=var/lib/mysql-multi/{{ item }} dest=/var/lib/mysql-{{ mysql_name }}/{{ item }} owner=mysql group=mysql force=yes mode=0700
+  with_items:
+    - bin/import-tables-xtra.sh
+    - bin/init-db.sh
+    - bin/init-slave-mysqldump.sh
+    # - bin/init-slave-rsync.sh
+    # - bin/init-slave.sh
+    - bin/init-grants.sh
+    - bin/init-slave-xtra.sh
+    # - bin/screen-rsync-worker.sh
+    - bin/server-lock.sh
+    - bin/server-unlock.sh
+    - bin/apply-replication.sh
+    - bin/backup-xtra.sh
+    - bin/backup-dump.sh
+    - bin/backup-files.sh
+    - bin/start.sh
+    - bin/start-without-network.sh
+    - bin/stop.sh
+    - bin/restart.sh
+    - bin/upgrade.sh
+  when: mysql_skip_install_tools is not defined
+  tags: [ mysql-server, configs, db-install, scripts ]
+
+ # DO NOT DELETE!
+
+- name: '({{ mysql_name }}) removing old files'
+  file: path=/var/lib/mysql-{{ mysql_name }}/{{ item }} state=absent
+  with_items:
+    - bin/watchdog-multimaster.sh
+    - bin/init-slave-xtra-remote.sh
+    - bin/import-tables-xtra-remote.sh
+    - bin/init-slave-postinstall.sh
+  when: mysql_skip_install_tools is not defined
+  tags: [ mysql-server, configs, db-install ]
+
+- name: '({{ mysql_name }}) changing grants'
+  template: src=var/lib/mysql-multi/{{ item }} dest=/var/lib/mysql-{{ mysql_name }}/{{ item }} owner=mysql group=mysql force=yes mode=0700
+  with_items:
+    - sql/grants.sql
+  register: grants
+  tags: [ mysql-server, configs, db-install, mysql-grants ]
+
+- name: '({{ mysql_name }}) initializing database'
+  shell: /var/lib/mysql-{{ mysql_name }}/bin/init-db.sh
+  when: mysql_db_exist | bool == False
+  tags: [ mysql-server, db-install ]
+
+- name: '({{ mysql_name }}) start without network'
+  shell: /var/lib/mysql-{{ mysql_name }}/bin/start-without-network.sh
+  when: mysql_db_exist | bool == False
+  tags: [ mysql-server, db-install ]
+
+- name: '({{ mysql_name }}) init grants'
+  shell: /var/lib/mysql-{{ mysql_name }}/bin/init-grants.sh 
+  ignore_errors: yes
+  when: grants.changed and (init_replica is not defined or not init_replica.changed)
+  tags: [ mysql-slave, mysql-grants ]
+
+- name: '({{ mysql_name }}) apply replication'
+  shell: /var/lib/mysql-{{ mysql_name }}/bin/apply-replication.sh 
+  ignore_errors: yes
+  when: config.changed and (init_replica is not defined or not init_replica.changed)
+  tags: [ mysql-slave, mysql-replication, configs ]
+
+
+

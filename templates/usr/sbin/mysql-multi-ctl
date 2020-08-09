@@ -1,0 +1,271 @@
+#!/bin/bash
+
+MYSQL_NAME="${MYSQL_NAME:='my'}"
+MYSQL_CONFIG="${MYSQL_CONFIG:='/etc/my.cnf'}"
+MYSQL_DATA_DIR=""
+# MYSQL_XTRA_HOST="${MYSQL_XTRA_HOST:=''}"
+# MYSQL_XTRA_PORT="${MYSQL_XTRA_PORT:='{{ mysql_xtra_port }}' }"
+# MYSQL_REMOTE_CONFIG="${MYSQL_CONFIG}"
+# MYSQL_XTRA_TABLES=""
+# MYSQL_DEST_DB=""
+# BACKUP_PATH=/tmp/mysql-${MYSQL_NAME}
+PARALLEL="${PARALLEL:=4}"
+# ARCHIVE=false
+HELP=false
+
+# Command options
+OPTS=`getopt -o It:h:x:b:d:c:r:D:a --long help,tables:,host:,xtra-port:,backup-path:,datadir:,config:,remote-config:,db:,archive,parallel: -n 'parse-options' -- "$@"`
+if [ $? != 0 ] ; then echo "Failed parsing options." >&2 ; exit 1 ; fi
+eval set -- "$OPTS"
+
+while true; do
+  case "$1" in
+    -I | --help )           HELP=true; shift ;;
+    -t | --tables )         MYSQL_XTRA_TABLES="$2"; shift 2 ;;
+    -h | --host )           MYSQL_XTRA_HOST="$2"; shift 2 ;;
+    -x | --xtra-port )      MYSQL_XTRA_PORT="$2"; shift 2 ;;
+    -b | --backup-path )    BACKUP_PATH="$2"; shift 2 ;;
+    -d | --datadir )        MYSQL_DATA_DIR="$2"; shift 2 ;;
+    -c | --config )         MYSQL_CONFIG="$2"; shift 2 ;;
+    -r | --remote-config )  MYSQL_REMOTE_CONFIG="$2"; shift 2 ;;
+    -D | --db )             MYSQL_DEST_DB="$2"; shift 2 ;;
+    -a | --archive )        ARCHIVE=true; shift ;;
+    --parallel )            PARALLEL="$2"; shift 2 ;;
+    -- ) shift; break ;;
+    * ) break ;;
+  esac
+done
+
+# set defaults
+TABLES_JSON=${BACKUP_PATH}/tables.json
+TABLES_LIST=${BACKUP_PATH}/tables.list
+
+MYSQL_REMOTE_CONFIG=${MYSQL_REMOTE_CONFIG:-MYSQL_CONFIG}
+if [ -z ${MYSQL_DATA_DIR} ] && [ -f ${MYSQL_CONFIG} ] && [ -x /usr/bin/my_print_defaults ]; then
+  MYSQL_DATA_DIR=`my_print_defaults --defaults-file=${MYSQL_CONFIG} mysqld | awk -F'=' '/datadir/ {print $2}' | head -1`
+  # MYSQL_DATA_DIR=`mysql --defaults-file=${MYSQL_CONFIG} -e 'SELECT @@datadir' -N`
+fi
+
+if [ "${HELP}" = true ] || [ -z "${MYSQL_CONFIG}" ] || [ -z "${MYSQL_XTRA_TABLES}" ] ; then 
+
+  echo
+  echo "Usage: $(basename $0) [OPTIONS] -t db.table1[,db.table2]"
+  echo
+  echo "  -I, --help          Display this help and exit."
+  echo "  -a, --archive       Archive only, don't import"
+  echo "  -b, --backup-path name"
+  echo "                      Temporary directory"
+  echo "  -c, --config name   Local mysql config"
+  echo "  -d, --datadir name  Path to the database root directory."
+  echo "  -D, --db name[:new,name2:new2,name3:new3]"
+  echo "                      Rename databases (be careful!)."
+  echo "  -h, --host name     Connect to host."
+  echo "  --parallel #        Number of threads for parallel export/import"
+  echo "  -r, --remote-config name"
+  echo "                      Remote mysql config."
+  echo "  -t, --tables db.name1,db.name2,db.%,db__.%"
+  echo "                      Tables or databases to import, comma separated."
+  echo "  -x, --xtra-port #   Port number to use for remote xtrabackup connection."
+  echo 
+  echo "Variables (--variable-name value)           Value (after reading options)"
+  echo "------------------------------------------- ------------------------------"
+  echo "archive                                     ${ARCHIVE}"
+  echo "backup-path                                 ${BACKUP_PATH}"
+  echo "config                                      ${MYSQL_CONFIG}"
+  echo "datadir                                     ${MYSQL_DATA_DIR}"
+  echo "db                                          ${MYSQL_DEST_DB}"
+  echo "host                                        ${MYSQL_XTRA_HOST}"
+  echo "parallel                                    ${PARALLEL}"
+  echo "remote-config                               ${MYSQL_REMOTE_CONFIG}"
+  echo "tables                                      ${MYSQL_XTRA_TABLES}"
+  echo "xtra-port                                   ${MYSQL_XTRA_PORT}"
+  exit 4;
+fi
+
+mkdir -p ${BACKUP_PATH}/data
+mkdir -p ${BACKUP_PATH}/innodb
+find ${BACKUP_PATH}/data -type f -delete
+find ${BACKUP_PATH}/innodb -type f -delete
+
+date +"[%F %T] Get tables info ..." 
+
+HTTP_CODE=$(echo -e "${MYSQL_XTRA_TABLES//[,; ]/\\n}" | \
+  curl -s "http://${MYSQL_XTRA_HOST}:${MYSQL_XTRA_PORT}/show-tables?${MYSQL_REMOTE_CONFIG}" --data-binary "@-" -H "Expect:" -o ${TABLES_JSON} -w "%{http_code}")
+
+EXISTING_TABLES=$(jq -r ".tables[].name" ${TABLES_JSON} | tee ${TABLES_LIST} )
+
+if [ "${HTTP_CODE}" != "200" ]; then
+  date +"[%F %T] Error:"
+  cat ${TABLES_JSON}
+  exit 1
+fi
+
+if [ -z "${EXISTING_TABLES}" ]; then
+  date +"[%F %T] No tables found"
+  exit 1
+fi
+
+for TABLE in ${EXISTING_TABLES}; do
+  (
+    DIR=`echo ${TABLE} | cut -d. -f1`
+    FILE=`echo ${TABLE} | cut -d. -f2`
+    BACKUP_FILE="${BACKUP_PATH}/data/${DIR}/${FILE}"
+  
+    date +"[%F %T] Preparing ${BACKUP_FILE}.sql..."
+    install -d ${BACKUP_PATH}/data/${DIR}
+  
+    # Renaming destination database
+    if [ -z "${MYSQL_DEST_DB##*:*}" ]; then
+      for PAIR in ${MYSQL_DEST_DB//[,;]/$IFS}; do
+        # PAIR = "name>new_name"
+        SRC_DB=$(echo ${PAIR} | cut -f1 -d:)
+        DST_DB=$(echo ${PAIR} | cut -f2 -d:)
+        if [ "${DIR}" = "${SRC_DB}" ]; then
+          DIR=${DST_DB:-$DIR} 
+          break
+        fi
+      done
+    else
+      DIR=${MYSQL_DEST_DB:-$DIR}
+    fi
+    
+    echo 'SET SQL_LOG_BIN = 0;' > ${BACKUP_FILE}.sql1
+    echo 'SET FOREIGN_KEY_CHECKS = 0;' >> ${BACKUP_FILE}.sql1
+    echo 'CREATE DATABASE IF NOT EXISTS `'${DIR}'`;' >> ${BACKUP_FILE}.sql1
+    # echo 'DROP TABLE IF EXISTS `'${DIR}'`.`'${FILE}'`;' >> ${BACKUP_FILE}.sql1
+    echo 'USE `'${DIR}'`;' >> ${BACKUP_FILE}.sql1
+  
+    echo "${TABLE}" | \
+    curl -f -s "http://${MYSQL_XTRA_HOST}:${MYSQL_XTRA_PORT}/show-create-table?${MYSQL_REMOTE_CONFIG}" --data-binary "@-" -H "Expect:" | \
+      sed -Ee 's|(TABLE.+)`'${FILE}'`|\1`'${FILE}'`|i' >> ${BACKUP_FILE}.sql1
+  
+    if [ $? -ne 0 ]; then
+      date +"[%F %T] Mysqldump failed" 
+      exit 1
+    fi
+  
+    FORMAT=$(jq -r '.tables[] | select(.name=="'${TABLE}'").format' ${TABLES_JSON})
+  
+    if [ "${FORMAT^^}" = "COMPACT" ]; then
+      echo 'ALTER TABLE `'${DIR}'`.`'${FILE}'` ROW_FORMAT='${FORMAT}';' >> ${BACKUP_FILE}.sql1
+    fi
+    echo 'ALTER TABLE `'${DIR}'`.`'${FILE}'` DISCARD TABLESPACE;' >> ${BACKUP_FILE}.sql1
+  
+    echo 'SET SQL_LOG_BIN = 0;' > ${BACKUP_FILE}.sql2
+    echo 'SET FOREIGN_KEY_CHECKS = 0;' >> ${BACKUP_FILE}.sql2
+    echo 'ALTER TABLE `'${DIR}'`.`'${FILE}'` IMPORT TABLESPACE;' >> ${BACKUP_FILE}.sql2
+  ) &
+
+  # if [[ $(jobs -r -p | wc -l) -gt ${PARALLEL} ]]; then
+  #   wait -n
+  # fi
+  while [ $(jobs -r -p | wc -l) -gt "${PARALLEL}" ]; do
+    sleep 0.05
+  done
+  
+done
+
+wait
+
+date +"[%F %T] Get remote xtrabackup ..." 
+
+curl "http://${MYSQL_XTRA_HOST}:${MYSQL_XTRA_PORT}/dump-tables?${MYSQL_REMOTE_CONFIG}" --data-binary "@${TABLES_LIST}" -H "Expect:" | \
+  unpigz -c | xbstream -x -C ${BACKUP_PATH}/data --parallel=${PARALLEL}
+
+if [ -f ${BACKUP_PATH}/data/xtrabackup_slave_info ] ; then 
+
+  date +"[%F %T] Uncompressed size: `du -ms ${BACKUP_PATH} | cut -f1`mb" 
+  date +"[%F %T] Prepare xtrabackup ..." 
+  
+  xtrabackup --prepare --export --use-memory=2G --target-dir=${BACKUP_PATH}/data &>/dev/null
+
+  mv -v ${BACKUP_PATH}/data/ibdata* ${BACKUP_PATH}/data/ib_logfile* ${BACKUP_PATH}/innodb
+
+  for TABLE in ${EXISTING_TABLES}; do
+    (
+      DIR=`echo ${TABLE} | cut -d. -f1`
+      FILE=`echo ${TABLE} | cut -d. -f2`
+      BACKUP_FILE="${BACKUP_PATH}/data/${DIR}/${FILE}"
+
+      # Renaming destination database
+      if [ -z "${MYSQL_DEST_DB##*:*}" ]; then
+        for PAIR in ${MYSQL_DEST_DB//[,;]/$IFS}; do
+          # PAIR = "name>new_name"
+          SRC_DB=$(echo ${PAIR} | cut -f1 -d:)
+          DST_DB=$(echo ${PAIR} | cut -f2 -d:)
+          if [ "${DIR}" = "${SRC_DB}" ]; then
+            DIR=${DST_DB:-$DIR} 
+            break
+          fi
+        done
+      else
+        DIR=${MYSQL_DEST_DB:-$DIR}
+      fi
+
+      for SUFFIX in ibd cfg sql1 sql2; do
+        if [ ! -f ${BACKUP_FILE}.${SUFFIX} ]; then
+          date +"[%F %T] Can't find '${BACKUP_FILE}.${SUFFIX}', process failed!" && exit 2
+        fi
+      done
+
+      if [ ${ARCHIVE} = true ] ; then
+        date +"[%F %T] Archiving '${TABLE}' ..."
+
+        tar -C "${BACKUP_PATH}/data/${DIR}" --remove-files -cf - ${FILE}.{ibd,cfg,sql1,sql2} | pigz --fast -p2 > ${BACKUP_FILE}.tgz
+
+        if [ $? -ne 0 ]; then
+          date +"[%F %T] Errors in ${BACKUP_FILE}.sql1, failed!" && exit 1
+        else
+          date +"[%F %T] Done: ${BACKUP_FILE}.tgz, `du -ms ${BACKUP_FILE}.tgz | cut -f1`mb"
+        fi
+
+      else
+        date +"[%F %T] Restoring '${TABLE}' to '${DIR}.${FILE}'"
+        
+        mysql --defaults-file=${MYSQL_CONFIG} --force=0 < ${BACKUP_FILE}.sql1
+
+        if [ $? -ne 0 ]; then
+          date +"[%F %T] Errors in ${BACKUP_FILE}.sql1, failed!" && exit 1
+        fi
+
+        rm -f ${MYSQL_DATA_DIR}/${DIR}/${FILE}.{ibd,cfg} 
+        
+        mv -f ${BACKUP_FILE}.ibd ${MYSQL_DATA_DIR}/${DIR}/${FILE}.ibd
+        mv -f ${BACKUP_FILE}.cfg ${MYSQL_DATA_DIR}/${DIR}/${FILE}.cfg
+        chown mysql:mysql ${MYSQL_DATA_DIR}/${DIR}/${FILE}.{ibd,cfg}
+
+        mysql --defaults-file=${MYSQL_CONFIG} --force=0 < ${BACKUP_FILE}.sql2
+
+        if [ $? -ne 0 ]; then
+          date +"[%F %T] Errors in ${BACKUP_FILE}.sql2, failed!" && exit 1
+        fi
+      fi
+    ) &
+
+    # if [[ $(jobs -r -p | wc -l) -gt ${PARALLEL} ]]; then
+    #   wait -n
+    # fi
+    while [ $(jobs -r -p | wc -l) -gt "${PARALLEL}" ]; do
+      sleep 0.1
+    done
+    
+  done
+
+  wait
+
+  if [ ${ARCHIVE} = true ] ; then
+    find ${BACKUP_PATH}/{data,innodb} -type f ! -name '*.tgz' -delete
+    rmdir ${BACKUP_PATH}/innodb
+  else
+    find ${BACKUP_PATH}/{data,innodb} -type f -delete
+  fi
+
+  date +"[%F %T] Done"
+  exit 0
+
+else
+
+    date +"[%F %T] Xtrabackup transfer failed, aborting!"
+    exit 3
+
+fi

@@ -1,0 +1,108 @@
+---
+
+- name: 'installing percona repo (debian)'
+  apt:
+    state: present 
+    deb: https://repo.percona.com/apt/percona-release_latest.{{ ansible_distribution_release }}_all.deb
+  register: _install_software
+  until: _install_software is succeeded
+  retries: 3
+  when: mysql_percona_repo == true
+  tags: [ mysql-multi, packages ]
+
+- name: 'export DEBIAN_FRONTEND="noninteractive"'
+  shell: export DEBIAN_FRONTEND="noninteractive"
+  changed_when: False
+  tags: [ mysql-multi, packages ]
+
+- name: 'Set MySQL root password before installing'
+#  debconf: name='mysql-server' question='mysql-server/{{ item }}' value='default' vtype='password'
+  debconf: name={{ mysql_package }} question={{ mysql_package }}/{{ item }} value='default' vtype='password'
+  with_items:
+    - root-pass
+    - re-root-pass
+  changed_when: False
+  tags: [ mysql-multi, packages ]
+
+- name: 'installing packages'
+  apt: 
+    state: present 
+    # force: yes 
+    update_cache: yes 
+    # cache_valid_time: 3600
+    name:
+      - "{{ mysql_package }}{{ mysql_version|ternary('='+mysql_version, '') }}"
+      - "{{ mysql_xtrabackup_package }}"
+      - pigz
+      - socat
+      - jq
+  register: _install_software
+  until: _install_software is succeeded
+  retries: 3
+  tags: [ mysql-multi, packages ]
+
+- name: 'disabling and stopping "default mysql-server"'
+  service: name=mysql enabled=no state=stopped
+  tags: [ mysql-multi, packages, disabling ]
+
+- name: 'disabling and stopping apparmor'
+  service: name=apparmor enabled=no state=stopped
+  ignore_errors: yes
+  tags: [ mysql-multi, packages, disabling ]
+
+- name: 'creating /etc/mysql-multi/'
+  file: path=/etc/mysql-multi/ state=directory owner=mysql group=mysql force=yes
+  tags: [ mysql-multi, packages, configs ]
+
+- name: 'changing permissions on /var/log/mysql/'
+  file: 
+    path=/var/log/mysql/ state=directory owner=mysql group=root force=yes mode="u=rwX,g=rX,o=rX" recurse=yes
+  tags: [ mysql-multi, packages, permissions, chmod ]
+
+- name: 'copying /usr/sbin/mysql-multi script'
+  template: src=usr/sbin/mysql-multi dest=/usr/sbin/mysql-multi mode=755 force=yes
+  tags: [ mysql-multi, packages, configs ]
+
+- name: systemd
+  when: ansible_service_mgr in 'systemd'
+  tags: [ mysql-server, db-install ]
+  block:
+
+    # - name: 'disabling default mysqld service'
+    #   shell: "systemctl disable mysqld.service"
+    #   changed_when: False
+    #   tags: [ mysql-multi, packages ]
+
+    - name: 'installing systemd mysql-multi service'
+      template: src=etc/systemd/system/mysql-multi@.service dest=/etc/systemd/system/mysql-multi@.service mode=644 force=yes
+
+    - name: 'systemctl daemon-reload'
+      shell: "systemctl daemon-reload"
+      changed_when: False
+      tags: [ mysql-multi, packages ]
+
+    - name: 'enabling mysql-multi service'
+      shell: "systemctl enable mysql-multi@{{instance.instance}}"
+      changed_when: False
+      when: inventory_hostname in instance.hosts|default([inventory_hostname])|host_list(groups)
+      with_items: "{{ mysql_instances|default([]) }}"
+      loop_control:
+        loop_var: "instance"
+        label: "instance: {{ instance.instance }}"
+      tags: [ mysql-multi, packages ]
+
+- name: upstart
+  when: ansible_service_mgr == 'upstart'
+  tags: [ mysql-server, db-install ]
+  block:
+
+    - name: 'copying mysql-multi init.d script'
+      template: src=etc/init.d/mysql-multi dest=/etc/init.d/mysql-multi mode=755 force=yes
+      tags: [ mysql-multi, packages, configs ]
+
+    - name: 'enabling mysql-multi service'
+      shell: "update-rc.d mysql-multi defaults || true"
+      changed_when: False
+      tags: [ mysql-multi, packages ]
+
+

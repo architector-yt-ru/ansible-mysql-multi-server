@@ -1,0 +1,89 @@
+---
+
+# Необходимо проитерироваться по всем инстансам конфига, проверить заданные хосты/группы/маски на валидность текущему хосту
+#
+# Config
+#
+# vars:
+#   defaults:
+#     mysql_master_host: 127.0.0.1
+#     mysql_master_user: service
+#     mysql_master_pass: 4rfv5tgb
+#     mysql_memory: 8G
+#     mysql_skip_networking: 0
+#     mysql_expire_logs_days: 2
+#     mysql_read_only: 1
+#     mysql_general_log: 0
+#
+#   mysql_instances: 
+#
+#     - instance: vertis
+#       defaults: { mysql_port: 3200, mysql_rsync_port: 4313, mysql_master_port: 1513 }
+#       hosts: 
+#         - mysql-02-sas.dev.vertis.yandex.net
+#         - mysql-03-sas.dev.vertis.yandex.net: { mysql_port: 3200 }
+#         - group_name
+# 
+# Запуск установки инстанса только при совпадении хоста или группы
+# Параметры наследуются следующим образом: 
+# 1. mysql_defaults (defaults/main.yml)
+# 2. defaults (playbook vars)
+# 3. defaults (instance vars)
+# 4. host/group params
+#
+# Используется два необходимых фильтра: host_list и host_defaults
+# host_list - разворачивает группы, отдает список хостов
+# host_defaults - объединяет параметры инстанса и хоста/группы
+
+
+- name: match instance
+  include: install-debian.yml 
+  when: ansible_os_family == "Debian"
+
+- name: match instance
+  include: install-redhat.yml 
+  when: ansible_os_family == "RedHat"
+
+- name: Disable swap
+  when: mysql_swap_off | default(false)
+  block:
+
+    - name: Remove swapfile from /etc/fstab
+      mount:
+        name: swap
+        fstype: swap
+        state: absent
+
+    - name: Disable swap (swapoff -a)
+      command: swapoff -a
+      when: ansible_swaptotal_mb > 0
+
+# - name: match instance
+#   include: xtra-remote.yml 
+  # when: ansible_os_family == "RedHat"
+
+# - name: match instance
+#   include: instance-setup.yml 
+#     mysql={{ mysql_defaults|combine(defaults|default({}), recursive=True) }}
+#     mysql_name={{instance.instance}}
+
+- name: match instance
+  include: instance-setup.yml 
+    mysql={{ mysql_defaults|combine(
+      defaults|default({}),
+      instance|host_defaults(inventory_hostname, groups),
+      recursive=True) }}
+    mysql_name={{instance.instance}}
+
+  when: inventory_hostname in instance.hosts|default([inventory_hostname])|host_list(groups)
+  with_items: "{{ mysql_instances|default([]) }}"
+  loop_control:
+    loop_var: "instance"
+    label: "instance: {{ instance.instance }}"
+
+      # {
+      #   'name':instance.instance,
+      #   'config':'/etc/mysql-multi/'+ instance.instance +'.cnf',
+      #   'server_id':( inventory_hostname ~ (mysql_port | default(3306) | string ) ) | int_hash(1, 65535),
+      #   'rsync_port':mysql_rsync_port | default( mysql_port | default(3306) | int + 1000 ),
+      # },

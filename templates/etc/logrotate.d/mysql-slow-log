@@ -1,0 +1,14 @@
+/var/log/mysql/*.slow.log {
+	compress
+	delaycompress
+	create 644 mysql mysql
+	size 1G
+	rotate 2
+	dateext
+	missingok
+	notifempty
+	nocopytruncate
+	sharedscripts
+	postrotate
+		for CNF in `find /etc/mysql-multi/ -name '*.cnf'`; do mysql --defaults-file=$CNF -Ne 'select @@global.slow_query_log into @slow; set global slow_query_log = 0; select sleep(1); FLUSH NO_WRITE_TO_BINLOG SLOW LOGS; set global slow_query_log = @slow;'; done > /dev/null 2>&1
+	endscript

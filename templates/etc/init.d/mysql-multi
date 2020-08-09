@@ -1,0 +1,277 @@
+#! /bin/sh
+### BEGIN INIT INFO
+# Provides:          mysql-multi
+# Required-Start:    $remote_fs $syslog
+# Required-Stop:     $remote_fs $syslog
+# Default-Start:     2 3 4 5
+# Default-Stop:      0 1 6
+# Short-Description: Multiinstance MySQL init script
+# Description:       Multiinstance MySQL init script
+### END INIT INFO
+  
+PATH=/sbin:/usr/sbin:/bin:/usr/bin
+DESC="MultiInstance MySQL"
+DAEMON=/usr/bin/mysqld_safe
+MYSQL_CONFIGS_DIR=/etc/mysql-multi
+MYSQL_CONFIGS=$(ls -1 $MYSQL_CONFIGS_DIR/*.cnf 2>/dev/null)
+MYSQL_INSTANCES=$(ls -1 $MYSQL_CONFIGS_DIR/*.cnf 2>/dev/null | awk -F'/' 'sub(/.cnf/, str) {print $4}')
+RUNDIR=/var/run/mysqld
+ 
+# In case server is taking more to start or stop increase the timeout in defaults file
+STARTTIMEOUT=900
+STOPTIMEOUT=900
+
+# Exit if the package is not installed
+[ -x "$DAEMON" ] || exit 0
+ 
+# Load the VERBOSE setting and other rcS variables
+. /lib/init/vars.sh
+ 
+# Define LSB log_* functions.
+# Depend on lsb-base (>= 3.2-14) to ensure that this file is present
+# and status_of_proc is working.
+. /lib/lsb/init-functions
+ 
+# Increase max open files
+ulimit -n 102400
+ 
+ 
+ 
+#
+# Function that checks does instance exist
+#
+# (start/stop) (instance[,instance2,..]) [echo]
+#
+
+verify_server () {
+    TIMEOUT=0
+    if [ "${1}" = "start" ]; then
+        TIMEOUT=${STARTTIMEOUT}
+    elif [ "${1}" = "stop" ]; then
+        TIMEOUT=${STOPTIMEOUT}
+    fi
+
+    COUNT=0
+    while [ ${COUNT} -lt ${TIMEOUT} ];
+    do
+        COUNT=$(( COUNT+1 ))
+        echo -n .
+        if [ "${1}" = "start" ] && [ "$(get_running ${2})" = 1 ]; then
+            if [ -z ${3} ]; then
+                echo
+            fi
+            return 0
+        fi
+        if [ "${1}" = "stop" ] && [ "$(get_running ${2})" = 0 ]; then
+            if [ -z ${3} ]; then
+                echo
+            fi
+            return 0
+        fi
+        sleep 1
+    done
+    return 1
+}
+
+get_pid_file () {
+
+    local MYSQL_CONFIG="${MYSQL_CONFIGS_DIR}/${1}.cnf"
+    local MYSQL_DATA_DIR=`my_print_defaults --defaults-file=${MYSQL_CONFIG} mysqld | awk -F'=' '/datadir/ {print $2}' || echo "/var/lib/mysql"`
+    local MYSQL_PID_FILE=`my_print_defaults --defaults-file=${MYSQL_CONFIG} mysqld_safe | awk -F'=' '/pid-file/ {print $2}'`
+
+    if [ -z "${MYSQL_PID_FILE}" ]; then
+        MYSQL_PID_FILE=`my_print_defaults --defaults-file=${MYSQL_CONFIG} mysqld | awk -F'=' '/pid-file/ {print $2}' || echo "${MYSQL_DATA_DIR}/$(hostname).pid"`
+    fi
+
+    echo ${MYSQL_PID_FILE}
+}
+
+get_running () {
+
+    local MYSQL_PID_FILE=$(get_pid_file ${1})
+
+    if [ -e "${MYSQL_PID_FILE}" ] && [ -d "/proc/$(cat "${MYSQL_PID_FILE}")" ]; then
+        echo 1
+    else
+        echo 0
+    fi
+}
+
+
+check_instance()
+{
+    if [ -z "$1" ] ; then
+        return 1
+    fi
+  
+    if [ -s "$MYSQL_CONFIGS_DIR/${1}.cnf" ] ; then
+        return 0
+    else
+        log_failure_msg "No such instance: $1"
+        return 1
+    fi
+ 
+    return 0
+}
+ 
+ 
+#
+# Function that starts the daemon/service
+#
+mysql_start()
+{
+    local RES=0
+ 
+    # do_start() was called without parameters, so start all instances
+    # [ -d "$RUNDIR" ] || mkdir "$RUNDIR"
+    # chown mysql:mysql "$RUNDIR"
+    # chmod 2775 "$RUNDIR"
+ 
+    for INSTANCE in $MYSQL_INSTANCES ; do
+        if [ "$(get_running ${INSTANCE})" = 1 ] ; then 
+            echo "MySQL instance '${INSTANCE}' already running"
+            MYSQL_INSTANCES=`echo " $MYSQL_INSTANCES " | sed "s/\s${INSTANCE}\s//g"`
+        else
+            start-stop-daemon --start --chuid mysql --background --quiet --exec $DAEMON -- --defaults-file=$MYSQL_CONFIGS_DIR/${INSTANCE}.cnf
+        fi
+    done
+
+    for INSTANCE in $MYSQL_INSTANCES ; do
+        echo -n "Starting MySQL instance '${INSTANCE}' ..."
+        verify_server start ${INSTANCE} no-progress
+        if [ $? -eq 0 ]; then 
+            echo " started"
+        else
+            echo " fail"
+            RES=1
+        fi
+    done
+
+    return ${RES}
+}
+ 
+ 
+#
+# Function that stops the daemon/service
+#
+mysql_stop()
+{
+    local RES=0
+ 
+    for INSTANCE in $MYSQL_INSTANCES ; do
+        if [ "$(get_running ${INSTANCE})" = 0 ] ; then 
+            echo "MySQL instance '${INSTANCE}' already stopped"
+            MYSQL_INSTANCES=`echo " $MYSQL_INSTANCES " | sed "s/\s${INSTANCE}\s//g"`
+        else
+            MYSQL_PIDFILE=$(get_pid_file ${INSTANCE})
+            start-stop-daemon --stop --pidfile $MYSQL_PIDFILE
+        fi
+    done
+ 
+    for INSTANCE in $MYSQL_INSTANCES ; do
+        echo -n "Stopping MySQL instance '${INSTANCE}' ..."
+        verify_server stop ${INSTANCE} no-progress
+        if [ $? -eq 0 ]; then 
+            echo " stopped"
+        else
+            echo " fail"
+            RES=1
+        fi
+    done
+ 
+    return ${RES}
+}
+ 
+ 
+#
+# Function that shows status of instances
+#
+mysql_status()
+{
+    local RES=0
+ 
+    for INSTANCE in $MYSQL_INSTANCES ; do
+        if [ "$(get_running ${INSTANCE})" = 1 ] ; then 
+            echo "MySQL instance '${INSTANCE}' is running"
+        else
+            echo  "MySQL instance '${INSTANCE}' is down"
+        fi
+    done
+  
+    return 0
+}
+ 
+mysql_command()
+{
+    local RES=0
+ 
+    for INSTANCE in $MYSQL_INSTANCES ; do
+        if [ -s "/var/lib/mysql-${INSTANCE}/bin/${1}.sh" ] ; then 
+            echo "Running '/var/lib/mysql-${INSTANCE}/bin/${1}.sh' ..."
+            /var/lib/mysql-${INSTANCE}/bin/${1}.sh
+        elif [ -s "/var/lib/mysql-${INSTANCE}/bin/${1}" ] ; then 
+            echo "Running '/var/lib/mysql-${INSTANCE}/bin/${1}' ..."
+            /var/lib/mysql-${INSTANCE}/bin/${1}
+        else
+            echo "Command '${1}' not found!"
+        fi
+        echo
+    done
+  
+    return 0
+}
+
+mysql_command_list()
+{
+    local RES=0
+ 
+    for INSTANCE in $MYSQL_INSTANCES ; do
+        echo "Commands for '${INSTANCE}':"
+        echo "---------------------------------------------"
+        ls -C /var/lib/mysql-${INSTANCE}/bin/
+        echo
+    done
+  
+    return 0
+}
+ 
+ 
+
+# checks
+
+if [ ! -z "$2" ] ; then
+    MYSQL_INSTANCES=${2//,/ }
+fi
+
+for INSTANCE in $MYSQL_INSTANCES ; do
+    check_instance ${INSTANCE} || return 1
+done
+
+case "$1" in
+  start)
+      mysql_start
+      ;;
+  stop)
+      mysql_stop
+      ;;
+  restart|force-reload)
+      mysql_stop 
+      mysql_start
+      ;;
+  status)
+      mysql_status
+      ;;
+  command_list)
+      mysql_command_list
+      ;;
+  "")
+      echo "Usage: $0 <start|stop|restart|status|command_list|command> [instance_name[,instance_name[,instance_name]]]" >&2
+      echo "          command - scripts from /var/lib/mysql-INSTANCE/bin/ directory" >&2
+      exit 3
+      ;;
+  *)
+      mysql_command $1
+      ;;
+esac
+ 
+exit 0

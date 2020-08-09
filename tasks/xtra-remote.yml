@@ -1,0 +1,29 @@
+---
+
+- name: Installing "/usr/sbin/mysqlxtra-server"
+  template: src="usr/sbin/mysqlxtra-server" dest="/usr/sbin/mysqlxtra-server" owner=root group=root mode=0755
+  tags: [ config, mysql-multi, mysqlxtra ]
+
+- name: systemd
+  # when: db_dir.stat.exists | bool == False
+  tags: [ mysql-multi, mysqlxtra, packages ]
+  block:
+
+    - name: 'Installing systemd mysqlxtra-server service'
+      template: src=etc/systemd/system/mysqlxtra-server.service dest=/etc/systemd/system/mysqlxtra-server.service mode=644 force=yes
+      register: _systemd_xtra
+
+    - name: 'Enabling mysqlxtra-server service'
+      systemd:
+        name: mysqlxtra-server
+        daemon_reload: yes
+        state: restarted
+        enabled: yes
+        masked: no
+      when: _systemd_xtra.changed
+
+    - name: 'Starting mysqlxtra-server service'
+      systemd:
+        name: mysqlxtra-server
+        state: started
+

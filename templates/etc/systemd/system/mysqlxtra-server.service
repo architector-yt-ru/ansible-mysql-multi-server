@@ -1,0 +1,26 @@
+[Unit]
+
+Description=MySQL Xtrabackup Remote Server
+After=syslog.target
+After=network.target
+
+[Install]
+
+WantedBy=multi-user.target
+ 
+[Service]
+
+Type=simple
+
+User=root
+Group=root
+
+ExecStart=/usr/bin/socat TCP4-LISTEN:{{ mysql_xtra_port | default('33301') }},fork,range={{ mysql_xtra_allow | default('0.0.0.0/0') }} EXEC:/usr/sbin/mysqlxtra-server
+Restart=always
+
+# LimitNOFILE=200000
+
+Restart=on-failure
+# RestartPreventExitStatus=1
+
+PrivateTmp=false

@@ -1,0 +1,57 @@
+---
+#
+# general
+#
+mysql_percona_repo:               true
+
+mysql_version:                    ""
+mysql_package:                    "Percona-Server-server-57"
+mysql_xtrabackup_package:         "percona-xtrabackup-24"
+mysql_config_path:                "/etc/mysql-multi/"
+
+mysql_defaults:
+  mysql_auto_increment_increment:   2
+  mysql_auto_increment_offset:      2
+  mysql_bind_address:               "::"
+  mysql_expire_logs_days:           3
+  mysql_general_log:                0
+  mysql_gtid:                       1
+  mysql_innodb_log_file_size:       128M
+  mysql_innodb_temp_data_file_path: "ibtmp1:12M:autoextend:max:10G"
+  mysql_innodb_trx_commit:          2
+  mysql_log_bin:                    1
+  mysql_master_host:                ""
+  mysql_master_pass:                ""
+  mysql_master_port:                "3306"
+  mysql_master_user:                "service"
+  mysql_max_allowed_packet:         64M
+  mysql_memory:                     4G
+  mysql_pass:                       ""
+  mysql_port:                       3306
+  mysql_query_cache:                0
+  mysql_read_only:                  0
+  mysql_relay_log_space_limit:      0
+  mysql_skip_networking:            0
+  mysql_slow_query_log:             1
+  mysql_sync_binlog:                10
+  mysql_user:                       root
+  mysql_table_open_cache:           8192
+  mysql_open_files_limit:           200000
+
+  # replication
+  mysql_replicate_do_db:            ""
+  mysql_replicate_do_table:         ""
+  mysql_replicate_ignore_db:        ""
+  mysql_replicate_ignore_table:     ""
+  mysql_replicate_rewrite_db:       ""
+  mysql_replicate_wild_do_table:    ""
+  mysql_replicate_wild_ignore_table: ""
+
+  backup_path:                      "/storage/mysql/backups/"
+  backup_parallel:                  8
+
+  mysql_userstat:                   0
+  mysql_thread_statistics:          0
+
+  mysql_extra:                      ""
+

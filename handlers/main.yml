@@ -1,0 +1,5 @@
+---
+- name: 'init grants'
+  shell: mysql --defaults-file={{ mysql_config }} < /var/lib/mysql-{{ mysql_name }}/sql/grants.sql
+  ignore_errors: yes
+  tags: [ mysql-slave ]

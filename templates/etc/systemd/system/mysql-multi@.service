@@ -1,0 +1,39 @@
+[Unit]
+
+Description=MySQL Multi Server for instance '%i'
+After=syslog.target
+After=network.target
+
+[Install]
+
+WantedBy=multi-user.target
+ 
+[Service]
+
+# Type=forking
+
+User=mysql
+Group=mysql
+
+PIDFile=/var/run/mysqld/mysql-%i.pid
+
+TimeoutStartSec=600
+TimeoutStopSec=600
+
+# true is needed for the ExecStartPre
+PermissionsStartOnly=true
+ExecStartPre=/usr/bin/install -d /var/run/mysqld -o mysql -m 755
+
+{% if mysql_version | regex_search("^5.7") %}
+ExecStart=/usr/sbin/mysqld --defaults-file={{mysql_config_path}}/%i.cnf --daemonize $MYSQLD_OPTS
+{% else %}
+ExecStart=/usr/sbin/mysqld --defaults-file={{mysql_config_path}}/%i.cnf $MYSQLD_OPTS
+{% endif %}
+
+LimitNOFILE=200000
+OOMScoreAdjust=-100
+
+Restart=on-failure
+RestartPreventExitStatus=1
+
+PrivateTmp=false

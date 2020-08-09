@@ -1,0 +1,258 @@
+[client]
+port                            = {{ mysql_port }}
+socket                          = /var/run/mysqld/mysql-{{ mysql_name }}.sock
+default-character-set           = utf8mb4
+user                            = {{ mysql_user }}
+password                        = {{ mysql_pass }}
+force
+
+[mysql]
+prompt                          = "{{ mysql_name }} [\\R:\\m:\\s] \\u@{{ inventory_hostname|host_short }}:\\d> "
+no-auto-rehash
+
+[mysqldump]
+socket                          = /var/run/mysqld/mysql-{{ mysql_name }}.sock
+user                            = {{ mysql_master_user }}
+password                        = {{ mysql_master_pass }}
+max_allowed_packet              = {{ mysql_max_allowed_packet }}
+single-transaction
+events
+routines
+triggers
+flush-privileges
+quick
+log-error                       = /var/log/mysql/mysqldump-{{ mysql_name }}.log
+verbose                         = 1
+# percona-only option
+lock-for-backup
+{% if not mysql_version | regex_search('^5.6') %}
+set-gtid-purged                 = OFF
+{% endif %}
+
+{% if mysql_master_host %}
+[mysql_init]
+init-command                    = "set long_query_time=100000;"
+
+[mysqldump_init]
+host                            = {{ mysql_master_host }}
+port                            = {{ mysql_master_port }}
+user                            = {{ mysql_master_user }}
+password                        = {{ mysql_master_pass }}
+master-data                     = {{ (mysql_gtid != '0') | ternary('0','1') }}
+dump-slave                      = 0
+include-master-host-port        = 0
+apply-slave-statements
+max_allowed_packet              = {{ mysql_max_allowed_packet }}
+single-transaction
+all-databases
+events
+routines
+triggers
+flush-privileges
+quick
+log-error                       = /var/log/mysql/mysqldump-{{ mysql_name }}.log
+verbose                         = 1
+# percona-only option
+lock-for-backup
+ignore-table                    = mysql.user
+ignore-table                    = mysql.db
+ignore-table                    = mysql.tables_priv
+ignore-table                    = mysql.columns_priv
+ignore-table                    = mysql.procs_priv
+ignore-table                    = mysql.proxies_priv
+
+[mysql_replication]
+host                            = {{ mysql_dump_host | default(mysql_master_host) }}
+port                            = {{ mysql_dump_port | default(mysql_master_port) }}
+user                            = {{ mysql_master_user }}
+password                        = {{ mysql_master_pass }}
+{% endif %}
+
+[mysql_install_db]
+user                            = mysql
+datadir                         = /var/lib/mysql-{{ mysql_name }}/data/
+innodb_data_home_dir            = /var/lib/mysql-{{ mysql_name }}/innodb/
+innodb_log_group_home_dir       = /var/lib/mysql-{{ mysql_name }}/innodb/
+innodb_data_file_path           = ibdata1:10M:autoextend
+innodb_log_file_size            = 128M
+
+[mysqld]
+
+#__System__
+
+{% if mysql_basedir|default(0) %}
+basedir                         = {{ mysql_basedir }}
+plugin_dir                      = {{ mysql_basedir }}/lib/plugin/
+#lc-messages-dir                 = {{ mysql_basedir }}/share
+{% endif %}
+
+user                            = mysql
+memlock
+read_only                       = {{ mysql_read_only }}
+
+log-error                       = /var/log/mysql/mysql-{{ mysql_name }}.log
+socket                          = /var/run/mysqld/mysql-{{ mysql_name }}.sock
+pid-file                        = /var/run/mysqld/mysql-{{ mysql_name }}.pid
+
+datadir                         = /var/lib/mysql-{{ mysql_name }}/data/
+tmpdir                          = /var/lib/mysql-{{ mysql_name }}/tmp/
+slave_load_tmpdir               = /var/lib/mysql-{{ mysql_name }}/tmp/
+
+#__Network__
+
+bind-address                    = {{ mysql_bind_address }}
+port                            = {{ mysql_port }}
+skip-name-resolve
+skip-host-cache
+skip-external-locking
+skip-networking                 = {{ mysql_skip_networking }}
+
+#__General__
+
+sql-mode                        = NO_ENGINE_SUBSTITUTION
+default-storage-engine          = innodb
+max_allowed_packet              = {{ mysql_max_allowed_packet }}
+sort_buffer_size                = 2M
+thread_cache_size               = 96
+max_connections                 = 3000
+max_connect_errors              = 1024
+max_tmp_tables                  = 64
+tmp_table_size                  = 64M
+max_heap_table_size             = 64M
+event_scheduler                 = 1
+init-connect                    = 'set names utf8mb4'
+character-set-server            = utf8
+collation-server                = utf8_general_ci
+explicit_defaults_for_timestamp = 1
+#log_timestamps                  = SYSTEM
+#disable-partition-engine-check  # 5.7.17
+{# percona-only options #}
+{% if mysql_userstat|default(0)|bool %}
+userstat                        = 1
+{% endif %}
+{% if mysql_thread_statistics|default(0)|bool %}
+thread_statistics               = 1
+{% endif %}
+table_open_cache                = {{ mysql_table_open_cache }}
+open_files_limit                = {{ mysql_open_files_limit }}
+
+# Query cache
+{% if mysql_query_cache|default(0)|regex_search('(\d+)')|int > 0 %}
+query_cache_type                = on
+query_cache_limit               = 1M
+query_cache_size                = {{ mysql_query_cache }}
+{% else %}
+query_cache_type                = off
+{% endif %}
+
+# Other
+max_prepared_stmt_count         = 32000
+
+gtid_mode                       = {{ (mysql_gtid != '0') | ternary('on','off') }}
+enforce_gtid_consistency        = on
+#gtid_deployment_step            = off
+
+# Master-master
+auto_increment_increment        = {{ mysql_auto_increment_increment }}
+auto_increment_offset           = {{ mysql_auto_increment_offset }}
+
+# Slow queries
+slow_query_log                  = {{ mysql_slow_query_log }}
+slow_query_log_file             = /var/log/mysql/mysql-{{ mysql_name }}.slow.log
+long_query_time                 = 0.05
+log_queries_not_using_indexes   = 0
+log_slow_admin_statements       = 1
+min_examined_row_limit          = 20
+max_slowlog_size                = 1G # percona-only
+max_slowlog_files               = 10 # percona-only
+log_throttle_queries_not_using_indexes = 10
+
+# General log
+general_log                     = {{ mysql_general_log }}
+general_log_file                = /var/log/mysql/mysql-{{ mysql_name }}.general.log
+
+#__Binlog__
+
+relay-log                       = /var/lib/mysql-{{ mysql_name }}/relaylog/relay-bin
+relay-log-index                 = /var/lib/mysql-{{ mysql_name }}/relaylog/relay-bin.index
+relay_log_space_limit           = {{ mysql_relay_log_space_limit }}
+{% if mysql_log_bin != '0' %}
+log-bin                         = /var/lib/mysql-{{ mysql_name }}/binlog/log-bin
+log-bin-index                   = /var/lib/mysql-{{ mysql_name }}/binlog/log-bin.index
+log-slave-updates
+expire_logs_days                = {{ mysql_expire_logs_days }}
+binlog_format                   = ROW
+binlog_row_image                = noblob
+binlog_rows_query_log_events    = true
+sync-binlog                     = {{ mysql_sync_binlog }}
+{% endif %}
+#master-info-repostiory          = TABLE 
+#relay-log-info-repository       = TABLE
+
+#__Replication__
+
+report-port                     = {{ mysql_port }}
+report-host                     = {{ inventory_hostname }}
+server-id                       = {{ mysql_server_id }}
+#skip-slave-start
+#slave_skip_errors               = 1062,1032
+slave-net-timeout               = 30
+
+#__Replication Rules__
+
+#replicate-do-table             = database.table
+#replicate-wild-do-table        = database.%
+
+{% for item in mysql_replicate_ignore_db|default([]) %}
+replicate-ignore-db             = {{item}}
+{% endfor %}
+{% for item in mysql_replicate_do_table|default([])  %}
+replicate-do-table              = {{item}}
+{% endfor %}
+{% for item in mysql_replicate_do_db|default([])  %}
+replicate-do-db                 = {{item}}
+{% endfor %}
+{% for item in mysql_replicate_ignore_table|default([]) %}
+replicate-ignore-table          = {{item}}
+{% endfor %}
+{% for item in mysql_replicate_rewrite_db|default([]) %}
+replicate-rewrite-db            = {{item}}
+{% endfor %}
+{% for item in mysql_replicate_wild_do_table|default([]) %}
+replicate-wild-do-table         = {{item}}
+{% endfor %}
+{% for item in mysql_replicate_wild_ignore_table|default([]) %}
+replicate-wild-ignore-table     = {{item}}
+{% endfor %}
+
+#__MyISAM__
+
+key_buffer_size                 = 16M
+myisam_recover_options          = BACKUP,FORCE
+
+#__Innodb__
+
+innodb_file_per_table
+#innodb_autoinc_lock_mode        = 0
+innodb_data_file_path           = ibdata1:10M:autoextend
+{% if not mysql_version | regex_search('^5.6') %}
+innodb_temp_data_file_path      = {{ mysql_innodb_temp_data_file_path }}
+{% endif %}
+innodb_data_home_dir            = /var/lib/mysql-{{ mysql_name }}/innodb/
+innodb_log_group_home_dir       = /var/lib/mysql-{{ mysql_name }}/innodb/
+innodb_buffer_pool_size         = {{ mysql_memory }}
+innodb_log_file_size            = {{ mysql_innodb_log_file_size }}
+innodb_log_buffer_size          = 4M
+innodb_flush_log_at_trx_commit  = {{ mysql_innodb_trx_commit }}
+innodb_lock_wait_timeout        = 50
+innodb_flush_method             = O_DIRECT
+innodb_thread_concurrency       = 8
+innodb_file_format              = Barracuda
+innodb_file_format_max          = Barracuda
+
+#__Extra params__
+{{ mysql_extra | default('') }}
+
+# disabled
+#!includedir /etc/mysql/conf.d/
+

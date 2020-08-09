@@ -1,0 +1,139 @@
+---
+# - name: 'export DEBIAN_FRONTEND="noninteractive"'
+#   shell: export DEBIAN_FRONTEND="noninteractive"
+#   changed_when: False
+#   tags: [ mysql-multi, packages ]
+
+# - name: 'Set MySQL root password before installing'
+# #  debconf: name='mysql-server' question='mysql-server/{{ item }}' value='default' vtype='password'
+#   debconf: name='percona-server-server-5.6' question=percona-server-server-5.6/{{ item }} value='default' vtype='password'
+#   with_items:
+#     - root-pass
+#     - re-root-pass
+#   changed_when: False
+#   tags: [ mysql-multi, packages ]
+
+# - name: 'Set MySQL root password before installing'
+#   debconf: name='percona-server-server-5.7' question=percona-server-server-5.7/root-pass value='default' vtype='password'
+#   changed_when: False
+#   tags: [ mysql-multi, packages ]
+
+# - name: 'Set MySQL re-root password before installing'
+#   debconf: name='percona-server-server-5.7' question=percona-server-server-5.7/re-root-pass value='default' vtype='password'
+#   changed_when: False
+#   tags: [ mysql-multi, packages ]
+
+- name: 'installing percona repo (redhat)'
+  yum: 
+    state: present # update_cache=yes
+    name: [ "https://repo.percona.com/yum/percona-release-latest.noarch.rpm" ]
+  register: _install_software
+  until: _install_software is succeeded
+  retries: 3
+  when: mysql_percona_repo == true
+  # when: mysql_basedir is not defined or mysql_basedir == ''
+  tags: [ mysql-multi, packages ]
+
+- name: 'installing packages (mysql)'
+  yum: 
+    state: present # update_cache=yes
+    name:
+      - "{{ mysql_package }}-{{ mysql_version }}"
+  register: _install_software
+  until: _install_software is succeeded
+  retries: 3
+  when: mysql_basedir is not defined or mysql_basedir == ''
+  tags: [ mysql-multi, packages ]
+
+- name: 'installing packages'
+  yum: 
+    state: present # update_cache=yes
+    name:
+      - "{{ mysql_xtrabackup_package }}"
+      - pigz
+      - socat
+      - jq
+  register: _install_software
+  until: _install_software is succeeded
+  retries: 3
+  tags: [ mysql-multi, packages ]
+
+# - name: 'disabling and stopping "default mysql-server"'
+#   service: name=mysql enabled=no state=stopped
+#   tags: [ mysql-multi, packages ]
+
+# - name: 'disabling apparmor'
+#   shell: "/etc/init.d/apparmor stop; /etc/init.d/apparmor teardown; update-rc.d -f apparmor remove"
+#   changed_when: False
+#   tags: [ mysql-multi, packages ]
+
+- name: 'creating {{mysql_config_path}}'
+  file: 
+    path={{mysql_config_path}} state=directory owner=mysql group=mysql force=yes
+  tags: [ mysql-multi, packages, configs ]
+
+- name: 'check if systemd present'
+  stat: path=/etc/systemd/system
+  register: systemd_dir
+  tags: [ mysql-multi, packages, configs ]
+
+- name: 'copying scripts and configs'
+  template: src={{item}} dest=/{{item}} mode=755 force=yes
+  with_items:
+    - usr/sbin/mysql-multi
+  tags: [ mysql-multi, packages, configs ]
+
+- name: 'changing permissions on /var/log/mysql/'
+  file: 
+    path=/var/log/mysql/ state=directory owner=mysql group=root force=yes mode="u=rwX,g=rX,o=rX"
+  tags: [ mysql-multi, packages, permissions, chmod ]
+
+- name: 'copying scripts and configs'
+  template: src={{item}} dest=/{{item}} mode=755 force=yes
+  with_items:
+    - usr/sbin/mysql-multi
+    # - etc/init.d/mysql-multi
+  tags: [ mysql-multi, packages, configs ]
+
+
+- name: systemd
+  when: ansible_service_mgr in 'systemd'
+  tags: [ mysql-server, db-install ]
+  block:
+
+    - name: 'disabling default mysqld service'
+      shell: "systemctl disable mysqld.service"
+      changed_when: False
+      tags: [ mysql-multi, packages ]
+
+    - name: 'installing systemd mysql-multi service'
+      template: src=etc/systemd/system/mysql-multi@.service dest=/etc/systemd/system/mysql-multi@.service mode=644 force=yes
+
+    # - name: 'installing systemd mysql-multi service'
+    #   copy: src=etc/systemd/system/mysql-multi@.service dest=/etc/systemd/system/mysql-multi@.service mode=755 force=yes 
+
+    - name: 'systemctl daemon-reload'
+      shell: "systemctl daemon-reload"
+      changed_when: False
+      tags: [ mysql-multi, packages ]
+
+    - name: 'enabling mysql-multi service'
+      shell: "systemctl enable mysql-multi@{{instance.instance}}"
+      changed_when: False
+      when: inventory_hostname in instance.hosts|default([inventory_hostname])|host_list(groups)
+      with_items: "{{ mysql_instances|default([]) }}"
+      loop_control:
+        loop_var: "instance"
+        label: "instance: {{ instance.instance }}"
+      tags: [ mysql-multi, packages ]
+
+# default config:
+
+# - name: 'generating default mysql_server_id'
+#   set_fact: mysql_server_id={{ ( inventory_hostname ~ (mysql_port | default(3306) | string ) ) | int_hash(1, 65535) }}
+#   tags: [ mysql-security, configs, db-install ]
+
+# - name: 'installing default config "default.cnf.example"'
+#   template: src=default.cnf.example dest=/etc/mysql-multi/default.cnf.example owner=root group=root mode=0755 backup=no
+#   tags: [ mysql-multi, configs ]
+
